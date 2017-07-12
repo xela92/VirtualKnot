@@ -1,0 +1,19 @@
+Questo script punta a migliorare la gestione del P2V (Physical to Virtual)
+e del V2P (Virtual to Physical), automatizzando strumenti di backup, mount
+e ripristino in e da immagini VDI (VirtualBox), VHD, VMDK, IMG (raw).
+
+Ho inoltre creato una distro live basata su ArchLinux che integra già tutti i tool e alcune comodità.
+è scaricabile qui:
+
+https://drive.google.com/folderview?id=0B_0YEp-TlF2jZ2g0QXRKYjcwT2s&usp=sharing
+
+*DISCLAIMER* Questo script e' fatto nel tempo libero e per uso personale, non
+mi ritengo responsabile per eventuali danni da esso causati. 
+Use at your own risk.
+
+
+Utilizzo: ./vk backup DISCO ( es. /dev/sda1 ) FileImmagine.{img|vdi|vhd|vmkd}
+./vk restore FileImmagine.{img|vdi|vhd|vmkd} DISCO
+./vk mount FileImmagine.{img|vdi|vhd|vmkd} PERCORSO
+
+Attenzione: con il restore il disco verra' SOVRASCRITTO

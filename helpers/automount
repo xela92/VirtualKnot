@@ -1,0 +1,73 @@
+#!/bin/bash
+PATTERN='sd[b-z][1-9]$'
+IS_SERVICE=0;
+
+function start {
+coproc inotifywait --monitor --event create,delete --format '%e %w%f' /dev
+
+while read -r -u "${COPROC[0]}" EVENT FILE; do
+    if [[ $FILE =~ $PATTERN ]]; then
+	
+	LABEL=`blkid -o value -s LABEL $FILE`;
+        DEV=`echo $FILE | sed 's/\/dev\///g'`;
+	
+	case $EVENT in
+	    CREATE)
+		echo "Sto montando il disco..." > /dev/tty1; sleep 1
+		if [ "$LABEL" == "" ]; then
+			LABEL=`echo $FILE | sed 's/\/dev\///g'`
+		fi
+		if [ ! -d "/mnt/$LABEL" ]; then
+			mkdir "/mnt/$LABEL";
+		fi
+		mount "$FILE" "/mnt/$LABEL";
+		echo "Disco montato in /mnt/$LABEL." > /dev/tty1
+                echo "$LABEL" > "/tmp/$DEV.mount";
+		if [ $IS_SERVICE == 0 ]; then
+			exit 0;		
+		fi               
+		;;
+	    DELETE) 
+                if [ -e "/tmp/$DEV.mount" ]; then
+                    LABEL=`cat "/tmp/$DEV.mount"`;
+                elif [ "$LABEL" == "" ]; then
+			LABEL=`echo $FILE | sed 's/\/dev\///g'`
+		fi
+		if [ "$LABEL" != "" ]; then
+                    echo -e "Disco $LABEL rimosso.\n" > /dev/tty1;
+                    rmdir "/mnt/$LABEL";
+                    rm "/tmp/$DEV.mount";
+		fi
+
+		;;
+		
+	esac
+    fi
+done
+
+}
+
+function start_service {
+	IS_SERVICE=1;
+	start;
+}
+
+function start_oneshot {
+	IS_SERVICE=0;
+	start;
+}
+
+function stop {
+	killall -9 automount;
+}
+
+case $1 in 
+	service) start_service;
+	;;
+	stop) stop;
+	;;
+	help) echo -e "Questo script permette il montaggio automatico dei dischi non appena collegati al pc.\nUtilizzo: $0 { service | stop | help };\nogni parametro diverso da questi (o se non e' specificato un parametro) fara' partire la modalita' oneshot.\nservice = modalita' always on, stop = stop servizio";
+	;;
+	*) start_oneshot;
+	;;
+esac

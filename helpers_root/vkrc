@@ -1,0 +1,17 @@
+#!/bin/bash
+
+loadkeys it
+alias backup='vk backup'
+alias restore='vk restore'
+alias mountdisk='vk mount'
+alias umountdisk='vk umount'
+alias vkhelp='vk help'
+alias wifi='wifi-menu'
+alias connetti-wifi='wifi-menu'
+alias connetti-cavo='dhcpcd'
+alias connetti-ethernet='dhcpcd'
+alias spegni='poweroff'
+
+echo -e "Benvenuto in VirtualKnot Live Media! Per iniziare, consiglio di: \n1. Scrivere 'aiuto' per una lista dei comandi VK \n2. Se sei connesso con un cavo di rete, digita 'connetti-cavo' o 'connetti-ethernet'\n Per connettivita' senza fili (wifi), digita 'connetti-wifi' o solo 'wifi'\n3. Aggiorna il programma con il comando 'vkupdate'\nPer spegnere il sistema, digitare 'spegni' o 'poweroff'.\nBuon divertimento! A.F."
+
+

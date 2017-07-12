@@ -1,0 +1,49 @@
+#!/bin/bash
+function getAuth {
+if [ `whoami` != "root" ]; then
+    echo "Devi essere root per eseguire questo script.";
+    exit 0;
+fi
+}
+
+function getUsage {
+    echo "Utilizzo: $0"
+    echo "Parametri facoltativi: devel percorso_git"
+}
+getAuth;
+
+TMPDIR="/tmp/vk";
+
+
+if [ ! -e $TMPDIR ]; then
+	mkdir $TMPDIR;
+else
+	rm -r $TMPDIR/*;
+fi
+
+cd $TMPDIR;
+
+    if [ "$1" == "devel" ]; then
+	git clone "$2";
+        if [ $? != 0 ]; then
+           echo "Aggiornamento fallito, sicuro di essere connesso ad internet?";    
+           exit 1;
+        fi
+else
+        if [ "$1" != "" ]; then
+            getUsage;
+            exit 0;
+        fi
+
+        git clone https://github.com/xela92/VirtualKnot.git
+        if [ $? -ne 0 ]; then
+           echo "Aggiornamento fallito, sicuro di essere connesso ad internet?";    
+           exit 1;
+        fi
+fi
+cd VirtualKnot
+cp vk /usr/bin/
+cp helpers/* /usr/bin/
+cp helpers_root/vkrc /root/.vkrc
+echo "Aggiornamento di VirtualKnot completato."
+

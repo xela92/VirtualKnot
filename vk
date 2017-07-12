@@ -1,0 +1,814 @@
+#!/bin/bash
+
+ # This is the source code of VirtualKnot.
+ # It is licensed under GNU GPL v. 2
+ # You should have received a copy of the license in this archive (see LICENSE).
+ #
+ # Copyleft Alex Florenti aka xela92, 2015.
+ #
+
+NO_CHECKS=false;
+function getAuth {
+if [ `whoami` != "root" ]; then
+    echo "Devi essere root per eseguire questo script.";
+    exit 1;
+fi
+}
+function check_disk_name {
+   local DISK=$1;
+
+   if [[ "$DISK" == \/dev\/sd* ]]; then
+      return 0;
+   else
+      return 1;
+   fi
+
+}
+
+function get_disk_name {
+    local DISK=$1;
+    echo $DISK | sed 's/\/dev\///g';
+}
+
+function check_file_exists {
+    local FILE=$1
+    if [ -e "$FILE" ]; then
+        return 0;
+    else 
+        return 1;
+    fi
+}
+
+function check_path_exists {
+    local FILEPATH=$1;
+    if [ -d "$FILEPATH" ]; then
+        return 0;
+    else 
+        return 1;
+    fi
+}
+
+
+function check_os {
+    OSNAME=`ls /etc/*release | grep -v os | cut -d '/' -f3 | sed 's/\-.*//g'` 
+    echo $OSNAME;
+}
+
+#Funzione di controllo dipendenze per Arch Linux e Ubuntu/Debian
+function check_dependencies {
+    #echo "sono entrato nel check";
+    #vdfuse va installato con yaourt
+    if [ $(check_os) == "arch" ]; then
+        local DEPS="pv util-linux coreutils virtualbox ntfs-3g qemu"
+        for DEP in $DEPS;
+            do
+                #echo "$DEP - presente";
+                pacman -Qi "$DEP" >/dev/null;
+                if [ $? -eq 1 ]; then
+                   echo "Installo la dipendenza $DEP (Archlinux)";
+                   #echo "eseguo il comando: pacman -S --noconfirm $DEP"
+                   pacman -S --noconfirm $DEP;
+                fi
+        done
+     else 
+       local DEPS="pv virtualbox qemu"
+       echo "Controllo e installo le dipendenze (Ubuntu/Debian)...";
+       for DEP in $DEPS;
+            do
+              apt-get -y install "$DEP" > /dev/null 2>&1;
+       done
+     fi
+
+}
+
+function getHelp {
+    if [ "$1" == "backup" ]; then
+        echo "Utilizzo: $0 backup DISCO ( es. /dev/sda1 ) FileImmagine.{img|vdi|vhd|vmkd}";
+        echo "Parametri opzionali: -s { MAXSPEED | MINSPEED } (default: maxspeed): velocita' di dd (in base alla dimensione dei blocchi letti)"
+        echo "-o : Ottimizzazione dello spazio libero (riduce lo spazio occupato dai backup)"
+                
+    elif [ "$1" == "restore" ]; then
+        echo "Utilizzo: $0 restore FileImmagine.{img|vdi|vhd|vmkd} DISCO";
+        echo "Parametri opzionali: -s { MAXSPEED | MINSPEED } (default: maxspeed): velocita' di dd (in base alla dimensione dei blocchi letti)"
+        echo "Attenzione: con il restore il disco verra' SOVRASCRITTO";
+       
+    elif [ "$1" == "mount" ]; then
+        echo "Utilizzo: $0 mount FileImmagine.{img|vdi|vhd|vmkd} PERCORSO";
+    elif [ "$1" == "umount" ]; then
+        echo "Utilizzo: $0 umount PERCORSO";
+    elif [ "$1" == "clone"]; then
+        echo "Utilizzo: $0 clone SORGENTE (es. /dev/sda) DESTINAZIONE (es. /dev/sdb)"
+    else
+        echo "Utilizzo: $0 backup DISCO ( es. /dev/sda1 ) FileImmagine.{img|vdi|vhd|vmkd}";
+        echo "$0 restore FileImmagine.{img|vdi|vhd|vmkd} DISCO";
+        echo "Parametri opzionali: -s { MAXSPEED | MINSPEED } (default: maxspeed): velocita' di dd (in base alla dimensione dei blocchi letti)"
+        echo "-o : Ottimizzazione dello spazio libero (riduce lo spazio occupato dai backup) --> SPERIMENTALE"
+        echo "$0 mount FileImmagine.{img|vdi|vhd|vmkd} PERCORSO";
+        echo "$0 umount PERCORSO";
+        echo "$0 clone SORGENTE (es. /dev/sda) DESTINAZIONE (es. /dev/sdb)"
+        
+        echo "Attenzione: con il restore (e con il clone) il disco verra' SOVRASCRITTO";
+    fi
+	echo "--no-checks: salta tutti i controlli di sicurezza. ATTENZIONE: consiglio di usarlo solo in caso di errori nei controlli del programma.
+	Può creare backup e/o restore incompleti, errati, creare guerre, carestia, poverta' e uccidere macchine. Sei stato avvisato."
+}
+
+function check_disk_exists {
+    local DISK=$1;
+    if [ -e "$DISK" ]; then
+        return 0;
+    else 
+        return 1;
+    fi
+}
+
+function getSpeed {
+    local SPEEDSTR=$1;
+    if [ "$SPEEDSTR" == "MAXSPEED" ] || [ "$SPEEDSTR" == "" ]; then
+        echo "1M"
+    elif [ "$SPEEDSTR" == "SLOW" ] || [ "$SPEEDSTR" == "MINSPEED" ]; then
+        echo "512"
+    else 
+        echo "0";
+    fi
+}
+
+function getFreeBytes {
+    local DEST=$1;
+    local KB=`df "$DEST" | awk '{ if (NR == 2) { NR = 1; print $4 } }'`
+    local BYTES=$(( $KB * 1024 ));
+    echo $BYTES;
+}
+
+function check_dimensions {
+    local SOURCEDIM=$1;
+    local DESTDIM=$2;
+    if [ $SOURCEDIM -gt $DESTDIM ]; then   
+        echo "Errore, la sorgente e' piu' grande della destinazione!";
+        exit 1;
+    fi
+
+}
+
+# parametro 1 = disco di destinazione (va bene anche il filepath, DF risale automaticamente al disco
+# parametro 2 = disco/file da backuppare
+#TODO riscrivere questa funzione.
+function check_backup_space {
+	local DEST=$1;
+        local BACKUPMEDIA=$2;
+        check_disk_name $2;
+        if [ $? -eq 1 ]; then
+            local ISDISK=0;
+        else
+            local ISDISK=1;
+        fi
+        local KBSPACE=`df "$DEST" | awk '{ if (NR == 2) { NR = 1; print $4 } }'`;
+        local MBSPACE=`echo $(( $KBSPACE / 1024 ))`;
+        #1048576 = 1024 * 1024
+        local GBSPACE=`echo $(($KBSPACE / 1048576))`;
+        echo "Spazio disponibile su $DEST : $GBSPACE GB";
+
+        if [ $ISDISK -eq 1 ]; then
+            local DISKSIZE=$(getDiskSize $BACKUPMEDIA);
+            if [ "$DISKSIZE" == "" ] || ! [[ $DISKSIZE =~ ^[-+]?[0-9]+$ ]]; then
+                echo "controllo dimensione del disco fallito. Esco."
+                exit 1;
+            fi
+            #Ottimizzando elimino il conto dello spazio libero
+            #TODO testare
+            if [ "$OPTIMIZE" -eq 1 ]; then
+                DISKSIZE=$(( $DISKSIZE - $(getFreeBytes $DEST) ));
+            fi
+            #1073741824 = 1024 * 1024 * 1024
+            local GBDISKSIZE=`echo $(( $DISKSIZE / 1073741824 ))`;
+
+
+            echo "Dimensione disco da backuppare: $GBDISKSIZE GB" 
+            if [ $GBSPACE -lt $GBDISKSIZE ]; then
+                    echo "ATTENZIONE. Spazio insufficiente per proseguire col backup. Si consiglia di utilizzare un disco aggiuntivo o di liberare dello spazio prima del prossimo backup."
+                    echo "Sono necessari almeno $GBDISKSIZE GB."
+                    exit 1;
+            elif [ $GBSPACE -lt 100 ]; then
+                    echo "Attenzione, lo spazio sul disco e' inferiore ai 100 GB. Si consiglia di prendere provvedimenti."
+                    sleep 1;
+                    echo "Proseguo comunque con il backup"
+            fi	
+        else 
+            local FILESIZE=$(getFileSize $BACKUPMEDIA);
+            if [ "$FILESIZE" == "" ] || ! [[ $FILESIZE =~ ^[-+]?[0-9]+$ ]]; then
+                echo "Controllo dimensione del disco fallito. Esco."
+                exit 1;
+            fi
+            #1048576 = 1024 * 1024
+            local GBFILESIZE=`echo $(( $FILESIZE / 1048576 ))`;
+            echo "Dimensione file da backuppare: $GBFILESIZE GB" 
+            if [ $GBSPACE -lt $GBFILESIZE ]; then
+                    echo "ATTENZIONE. Spazio insufficiente per proseguire col backup. Si consiglia di utilizzare un disco aggiuntivo o di liberare dello spazio prima del prossimo backup."
+                    echo "Sono necessari almeno $GBFILESIZE GB."
+                    exit 1;
+            elif [ $GBSPACE -lt 100 ]; then
+                    echo "attenzione, lo spazio sul disco e' inferiore ai 100 GB. Si consiglia di prendere provvedimenti."
+                    sleep 1;
+                    echo "proseguo comunque con il backup"
+            fi	
+        fi    
+
+}
+
+# parametro 1 = file da ripristinare
+# parametro 2 = disco di destinazione
+function check_restore_coherence {
+    
+    local FILE=$1;
+    local DISK=$2;
+    local DISKSIZE=$(getDiskSize $DISK);
+    local FILESIZE=$(getFileSize $FILE);
+    echo "Dimensione file: $FILESIZE KB";
+    echo "Dimensione disco: " $(( $DISKSIZE / 1024 )) "KB";
+    if [ "$FILESIZE" == "" ] || ! [[ $FILESIZE =~ ^[-+]?[0-9]+$ ]]; then
+        echo "Controllo dimensione del file fallito."
+        return 1;
+    fi
+    if [ "$DISKSIZE" == "" ] || ! [[ $DISKSIZE =~ ^[-+]?[0-9]+$ ]]; then
+        echo "Controllo dimensione del disco fallito."
+        return 1;
+    fi
+
+    if [ $FILESIZE -gt $DISKSIZE ]; then
+        echo "Il file immagine e' piu' grande del disco di destinazione. Operazione interrotta."
+        exit 0;
+    fi
+}
+
+function getDiskSize {
+   local DISK=$1;
+   local DISKSIZE=`lsblk -rbno SIZE "$DISK" 2>&1`;
+   local DISKSIZE=(${DISKSIZE[@]});
+   echo "${DISKSIZE[0]}";
+}
+
+function getFileSize {
+  local FILE=$1;
+  echo `du $FILE | awk '{ print $1 }'`;
+}
+
+function backup_checks {
+   local DISK=$1;
+   #Dimensione disco in bytes
+   local DISKSIZE=$(getDiskSize $DISK);
+   local FILE=$2;
+   local SPEED=$3;
+   local FILEPATH=`dirname $FILE`;
+    
+   if $NO_CHECKS; then
+        return;
+   fi
+
+   echo "speed: " $(getSpeed $SPEED);
+   check_disk_name "$DISK";
+   if [ $? -eq 1 ] ; then
+       echo "Nome disco non corretto. Si prega di specificarlo nuovamente.";
+       exit 1;
+   fi
+   check_disk_exists "$DISK";
+   if [ $? -eq 1 ]; then
+      echo "Il disco selezionato non esiste. Sicuro che sia quello corretto?";
+      exit 1;
+   fi
+   check_path_exists "$FILEPATH";
+   if [ $? -eq 1 ]; then
+       echo "Percorso non esistente. Lo creo.";
+       mkdir -p "$FILEPATH";
+   fi
+   check_file_exists "$FILE";
+   if [ $? -eq 0 ]; then
+      echo "Il file immagine esiste gia'. Eliminalo prima di procedere, oppure cambia il percorso o il nome del file."
+      exit 0;
+   fi
+
+   check_backup_space $FILEPATH $DISK;
+   if [ $(getSpeed $SPEED) == 0 ]; then
+        getHelp backup;
+        exit 0;
+   fi
+}
+function clone_checks {
+   local SOURCE=$1;
+   #Dimensione disco in bytes
+   local SOURCESIZE=$(getDiskSize $SOURCE);
+   local DEST=$2;
+   #Dimensione disco in bytes
+   local DESTSIZE=$(getDiskSize $DEST);
+    
+   if $NO_CHECKS; then
+        return;
+   fi
+
+   check_disk_name "$SOURCE";
+   if [ $? -eq 1 ] ; then
+       echo "Nome del disco sorgente non corretto. Si prega di specificarlo nuovamente.";
+       exit 1;
+   fi
+   check_disk_exists "$SOURCE";
+   if [ $? -eq 1 ]; then
+      echo "Il disco selezionato come sorgente non esiste. Sicuro che sia quello corretto?";
+      exit 1;
+   fi
+    check_disk_name "$DEST";
+   if [ $? -eq 1 ] ; then
+       echo "Nome del disco di destinazione non corretto. Si prega di specificarlo nuovamente.";
+       exit 1;
+   fi
+   check_disk_exists "$DEST";
+   if [ $? -eq 1 ]; then
+      echo "Il disco selezionato come destinazione non esiste. Sicuro che sia quello corretto?";
+      exit 1;
+   fi
+}
+function restore_checks {
+    local FILE=$1;
+    local DISK=$2;
+    #Dimensione disco in bytes
+    local SPEED=$3;
+
+    local FILEPATH=`dirname $FILE`;
+
+    check_disk_name "$DISK";
+    if [ $? -eq 1 ] ; then
+       echo "Nome disco non corretto. Si prega di specificarlo nuovamente.";
+       exit 0;
+    fi
+    check_disk_exists "$DISK";
+    if [ $? -eq 1 ]; then
+      echo "Il disco selezionato non esiste. Sicuro che sia quello corretto?";
+      exit 0;
+    fi
+   check_path_exists "$FILEPATH";
+   if [ $? -eq 1 ]; then
+       echo "Percorso non esistente.";
+       exit 0;
+   fi
+   check_file_exists "$FILE";
+   if [ $? -eq 1 ]; then
+      echo "Il file immagine scelto non esiste."
+      exit 0;
+   fi
+   
+   check_restore_coherence $FILE $DISK;
+
+   if [ $(getSpeed $SPEED) == 0 ]; then
+        getHelp restore;
+        exit 0;
+   fi
+
+}
+
+function mount_checks {
+    local FILE=$1;
+    local DEST=$2;
+
+    local FILEPATH=`dirname $FILE`;
+
+   check_path_exists "$DEST";
+   if [ $? -eq 1 ]; then
+       echo "Percorso di destinazione non esistente.";
+       exit 0;
+   fi
+   check_file_exists "$FILE";
+   if [ $? -eq 1 ]; then
+      echo "Il file immagine scelto non esiste."
+      exit 0;
+   fi
+}
+
+#Backup immagini RAW con DD. 
+#Parametro 1 = disco (/dev/sdX), parametro 2 = file di destinazione (/mnt/disco/immagine.img), parametro 3 = velocita'
+
+function backuptoimg {
+   local DISK=$1;
+   #Dimensione disco in bytes
+   local DISKSIZE=$(getDiskSize $DISK);
+
+   local FILE=$2;
+   local SPEED=$3;
+   backup_checks $DISK $FILE $SPEED;
+   if [ "$DISKSIZE" == "" ]; then
+        #se non lo sai, inventa ( 500 GB)
+        DISKSIZE=536870912000; 
+   fi
+   #TODO dd if=sda2.gz | gunzip > /dev/sda2 and dd if=/dev/sda2 | gzip > sda2.gz   
+   dd if="$DISK" bs=$(getSpeed $SPEED) conv=noerror,sync,sparse | pv --size $DISKSIZE | dd of="$FILE" bs=$(getSpeed $SPEED) conv=noerror,sync,sparse;
+}
+#Restore immagini RAW con DD. 
+#Parametro 1 = file sorgente (/mnt/disco/immagine.img), parametro 2 = disco (/dev/sdX), parametro 3 = velocita'
+
+function restoreimg {
+   local FILE=$1;
+   local DISK=$2;
+    #Dimensione disco in bytes
+    local FILESIZE=$(getFileSize $DISK);
+    local SPEED=$3;
+   
+   restore_checks $FILE $DISK $SPEED;
+
+   if [ "$FILESIZE" == "" ] || ! [[ $FILESIZE =~ ^[-+]?[0-9]+$ ]]; then
+        #se non lo sai, inventa ( 500 GB)
+        local FILESIZE=536870912000; 
+   fi
+
+
+   echo "Velocita': " $(getSpeed $SPEED);
+   #echo "Dimensione disco " $DISKSIZE;
+   dd if="$FILE" bs=$(getSpeed $SPEED) conv=noerror,sync,sparse | pv --size $(( $FILESIZE * 1024 )) | dd of="$DISK" bs=$(getSpeed $SPEED) conv=noerror,sync,sparse;
+
+}
+
+
+
+#Backup immagini in VDI con DD. 
+#Parametro 1 = disco (/dev/sdX), parametro 2 = file di destinazione (/mnt/disco/immagine.vdi), parametro 3 = velocita'
+
+function backuptovdi {
+local DISK=$1;
+local FILE=$2;
+local SPEED=$3;
+local DISKSIZE=$(getDiskSize $DISK);
+
+
+backup_checks $DISK $FILE $SPEED;
+
+#VBoxManage convertfromraw $DISK $FILE --format VDI
+dd if="$DISK" bs=$(getSpeed $SPEED) conv=noerror,sync,sparse | pv --size $DISKSIZE | VBoxManage convertfromraw stdin $FILE $DISKSIZE --format VDI
+
+}
+
+function restorevdi {
+   local FILE=$1;
+   local DISK=$2;
+    #Dimensione disco in bytes
+   local FILESIZE=$(getFileSize $FILE);
+   local FILEPATH=`dirname $FILE`;
+   local SPEED=$3;
+   
+   restore_checks $FILE $DISK $SPEED;
+
+   if [ "$FILESIZE" == "" ] || ! [[ $FILESIZE =~ ^[-+]?[0-9]+$ ]]; then
+        #se non lo sai, inventa ( 500 GB)
+        local FILESIZE=536870912000; 
+   fi
+
+echo "Per questa operazione converto l'immagine in formato RAW e poi la scrivo su disco, quindi avrai bisogno di $(( $FILESIZE / 1048576 )) GB di spazio su disco."
+check_backup_space $FILEPATH $FILE;
+echo "Converto l'immagine VDI in IMG (RAW)..."
+VBoxManage clonehd $FILE --format RAW $FILE.img
+if [ $? != 0 ]; then
+    echo "Conversione immagine fallita."
+    rm $FILE.img;
+fi
+echo "Scrivo l'immagine su disco..."
+restoreimg $FILE.img $DISK $SPEED;
+if [ $? != 0 ]; then
+    echo "Scrittura immagine convertita su disco fallita."
+    echo "Rimuovo l'immagine convertita? [s/N]"
+    read ANS;
+    if [ "${ANS,,}" == "s" ]; then
+        rm $FILE.img;
+    fi
+else 
+    echo "Operazione completata con successo. Rimuovo l'immagine temporanea IMG (RAW)..."
+    rm $FILE.img
+fi
+}
+
+#La funzione e' disponibile per NTFS
+function backuptovhd {
+local DISK=$1;
+local FILE=$2;
+local SPEED=$3;
+local DISKSIZE=$(getDiskSize $DISK);
+local CHECKFS=`blkid -o value -s TYPE $DISK`
+
+
+backup_checks $DISK $FILE $SPEED;
+if [ "${EXT,,}" == ".vhd" ]; then
+    echo "Rilevato VHD, converto..."
+        if [ "$CHECKFS" == "ntfs" ]; then
+            echo "Rilevato NTFS, uso NTFSClone e NTFSClone2VHD...";
+            umount $DISK > /dev/null 2>&1;
+            ntfsclone --save-image -o - $DISK | pv --size $DISKSIZE | ntfsclone2vhd - $FILE;
+        else
+            echo "Eseguo il backup in VHD di un filesystem di tipo $CHECKFS; Attenzione: e' un'operazione piuttosto lunga."
+            qemu-img convert -p -O vpc $DISK $FILE;
+        fi
+else 
+    echo "Rilevato VHDX, converto..."
+    qemu-img convert -p -O vhdx $DISK $FILE;
+fi
+
+
+}
+
+function restorevhd {
+local FILE=$1;
+local DISK=$2;
+local SPEED=$3;
+local DISKSIZE=$(getDiskSize $DISK);
+local EXT=$(getExt $FILE);
+restore_checks $FILE $DISK $SPEED;
+echo "Attenzione: il ripristino di file VHD(X) risulta piuttosto lento.";
+if [ "${EXT,,}" == ".vhd" ]; then
+    echo "Rilevato VHD, converto..."
+    qemu-img convert -p -f vpc -O raw $FILE $DISK;
+else 
+    echo "Rilevato VHDX, converto..."
+    qemu-img convert -p -f vhdx -O raw $FILE $DISK;
+fi
+
+
+}
+
+function backuptovmdk {
+local DISK=$1;
+local FILE=$2;
+local SPEED=$3;
+local DISKSIZE=$(getDiskSize $DISK);
+
+
+backup_checks $DISK $FILE $SPEED;
+
+#VBoxManage convertfromraw $DISK $FILE --format VMDK
+dd if="$DISK" bs=$(getSpeed $SPEED) conv=noerror,sync,sparse | pv --size $DISKSIZE | VBoxManage convertfromraw stdin $FILE $DISKSIZE --format VMDK
+
+}
+
+function restorevmdk {
+local FILE=$1;
+local DISK=$2;
+local SPEED=$3;
+local DISKSIZE=$(getDiskSize $DISK);
+restore_checks $FILE $DISK $SPEED;
+echo "Attenzione: il ripristino di file VMDK risulta piuttosto lento.";
+qemu-img convert -p -f vmdk -O raw $FILE $DISK;
+}
+
+function clone {
+    local SOURCE=$1;
+    local DEST=$2;
+    local CHECKFS=`blkid -o value -s TYPE $SOURCE`
+    local SOURCESIZE=$(getDiskSize $SOURCE);
+        if [ "$CHECKFS" == "ntfs" ]; then
+            echo "Rilevato NTFS, uso NTFSClone...";
+            umount $SOURCE > /dev/null 2>&1;
+            ntfsclone -o - $SOURCE | pv --size $SOURCESIZE | ntfsclone - $DEST;
+        else 
+            echo "Disco non NTFS. Lo spazio vuoto potrebbe essere copiato."
+            clone_checks;
+            dd if=$SOURCE of=$DEST bs=64K conv=noerror,sync,sparse status=progress
+        fi
+}
+
+function mountdisk {
+local FILE=$1;
+local DEST=$2;
+
+local TMPDIR="/tmp/vk_mount"
+
+mount_checks $FILE $DEST;
+
+if [ ! -e $TMPDIR  ]; then
+    mkdir $TMPDIR;
+fi
+
+
+umount $DEST > /dev/null 2>&1;
+umount $TMPDIR > /dev/null 2>&1;
+
+vdfuse $RO -f $FILE $TMPDIR;
+if [ $? != 0 ]; then
+    echo "Errore nel mount del disco.";
+    exit 0;
+fi
+echo "Quale partizione devo montare? (0 per uscire)";
+PARTS=($(ls $TMPDIR));
+select PART in ${PARTS[@]}
+    do
+   case $REPLY in
+        
+        0 ) echo "Non monto nulla, esco.";
+            exit 0;
+        ;;
+
+        *)
+        if ! [[ "$REPLY" =~ ^[0-9]+$ ]]; then 
+            echo "La risposta deve essere un numero"
+        else 
+            if [ $REPLY -gt ${#PARTS[@]} ] || [ $REPLY -eq 0 ]; then
+              echo "Scegliere una delle opzioni esistenti"
+            else
+                echo "Sto montando $PART...";
+                mount $TMPDIR/$PART $DEST;
+                if [ $? != 0 ]; then
+                    echo "Impossibile montare la partizione.";
+                    exit 0;
+                fi
+                echo "Fatto."
+                break;
+            fi
+        fi
+        ;; 
+       
+  esac
+done
+
+}
+
+function get_mountpoint {
+    local DISK=$1;
+    check_disk_name $DISK;
+    if [ $? -eq 1 ]; then
+        echo "nome disco non valido."
+        exit 1;
+    fi
+    local MOUNTPOINT=`lsblk "$DISK" | awk '{ if (NR == 2) { print $7 } }'`
+
+    echo $MOUNTPOINT;
+}
+
+
+function umountdisk {
+local DEST=$1;
+
+local TMPDIR="/tmp/vk_mount"
+
+if [ -d $DEST ]; then
+    umount $DEST > /dev/null 2>&1;
+    umount $TMPDIR > /dev/null 2>&1;
+    rmdir $TMPDIR > /dev/null 2>&1;
+else 
+    echo "La destinazione non e' una cartella.";
+fi
+}
+#Questa funzione ottimizza lo spazio libero facendo si' che i backup lo saltino (riempiendo di zeri i settori vuoti)
+#Parametro 1: disco da ottimizzare
+#Parametro 2: mountpoint dove montarlo (in caso non sia gia' montato) - default: /tmp/NOMEDISCO
+function optimize_freespace {  
+   local DISK=$1;
+   local DEST=$2;
+   local DISKNAME=$(get_disk_name $DISK);
+
+   if [ "$DEST" == "" ]; then
+       local DEST="/tmp/$DISKNAME"
+   fi
+   check_path_exists $DEST;
+   if [ $? -eq 1 ]; then
+       echo "Percorso non esistente. Lo creo.";
+       mkdir -p "$DEST";
+   fi
+   local MOUNTPOINT=$(get_mountpoint $DISK);
+   if [ "$MOUNTPOINT" == "" ]; then
+        local NEEDSUMOUNT=1;
+        mount $DISK $DEST;
+   else 
+       local DEST=$MOUNTPOINT;
+   fi
+   echo "Ottimizzazione dello spazio vuoto in corso, potrebbe volerci del tempo...";
+   dd if=/dev/zero of="$DEST"/zero.virtualknot bs=1MB conv=noerror,sync,sparse > /dev/null 2>&1;
+   rm "$DEST"/zero.virtualknot;
+   if [ "$NEEDSUMOUNT" -eq 1 ]; then
+        umount $DEST;
+   fi
+   echo "Ottimizzazione dello spazio vuoto completata.";
+     
+}
+
+#IMPLEMENTARE: COMPRESSIONE
+#sudo dd if=PART_PATH | VBoxManage convertdd stdin ubuntu.vdi SIZE_BYTES --format VDI where SIZE_BYTES is the size of the device in bytes –
+
+#ritorna gli ultimi 4 caratteri del file
+#TODO ritornare in modo piu' sano l'estensione
+function getExt {
+    local FILE=$1;
+    echo ${FILE:(-4)};
+}
+
+function main {
+#Questa funzione esegue le altre
+#Fatterello: questo posto fa schifo.
+local ACTION=$1;
+
+getAuth;
+
+
+local PARAM=$4;
+local PARAM1=$5;
+
+case $PARAM in
+
+     -s|--speed) 
+        SPEED=$5;
+     ;;
+     -o|--optimize) 
+        OPTIMIZE=1;
+     ;;
+     --no-check)
+        NO_CHECKS=true;
+     ;;
+
+esac
+
+case $PARAM1 in
+
+     -s|--speed) 
+        SPEED=$5;
+     ;;
+     -o|--optimize) 
+        OPTIMIZE=1;
+     ;;
+     --no-check)
+        NO_CHECKS=true;
+     ;;
+
+esac
+#echo "controllo le dipendenze..";
+if ! $NO_CHECKS; then
+check_dependencies;
+fi
+
+if [ $# -gt 6 ] || [ $# -lt 2 ]; then
+    getHelp $1;
+    exit 0;
+fi
+
+
+case $ACTION in 
+        backup)
+        local DISK=$2;
+        local FILE=$3;
+        local EXT=$(getExt $FILE);
+        if [ "$OPTIMIZE" -eq 1 ]; then
+            optimize_freespace $DISK;
+        fi
+
+        if [ "${EXT,,}" == ".img" ]; then
+            backuptoimg $DISK $FILE $SPEED;
+        elif [ "${EXT,,}" == ".vdi" ]; then
+            backuptovdi $DISK $FILE $SPEED;
+        elif [[ "${EXT,,}" == ?(.)vhd?(x) ]]; then
+            backuptovhd $DISK $FILE $SPEED;
+        elif [ "${EXT,,}" == "vmdk" ]; then
+            backuptovmdk $DISK $FILE $SPEED;
+        else 
+            echo "l'estensione del file non e' supportata."
+            getHelp backup;
+        fi
+        ;;
+        restore)
+        local FILE=$2;
+        local DISK=$3;
+        local EXT=$(getExt $FILE);
+        if [ "${EXT,,}" == ".img" ]; then
+            restoreimg $FILE $DISK $PARAM;
+        elif [ "${EXT,,}" == ".vdi" ]; then
+            restorevdi $FILE $DISK $PARAM;
+        elif [[ "${EXT,,}" == ?(.)vhd?(x) ]]; then
+            restorevhd $FILE $DISK $PARAM;
+        elif [ "${EXT,,}" == "vmdk" ]; then
+            restorevmdk $FILE $DISK $PARAM;
+        else
+            echo "l'estensione del file non e' supportata."
+            getHelp restore;
+        fi
+        ;;
+        "mount")
+        local FILE=$2;
+        local DEST=$3;
+        mountdisk $FILE $DEST;
+        ;;
+        "umount")
+        local DEST=$2;
+        umountdisk $DEST;
+        ;;
+        clone)
+        local SOURCE=$1;
+        local DEST=$2;
+        clone $SOURCE $DEST;
+        ;;
+        *)
+        getHelp;
+        exit 0;
+        ;;
+   
+esac
+
+}   
+
+
+#Qui parte tutto - Hic sunt leones
+
+main $@;
+if [ $? == 0 ]; then
+    echo "Completato con successo.";
+fi
+
+
+

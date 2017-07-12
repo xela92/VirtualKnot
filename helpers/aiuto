@@ -1,0 +1,7 @@
+#!/bin/bash
+
+echo -e "Benvenuto in VirtualKnot Live Media! Per iniziare, consiglio di: \n 1. Scrivere 'aiuto' per una lista dei comandi VK \n 2. Se sei connesso con un cavo di rete, digita 'connetti-cavo' o 'connetti-ethernet'\n   Per connettivita' senza fili (wifi), digita 'connetti-wifi' o solo 'wifi'\n3. Aggiorna il programma con il comando 'vkupdate'\nPer spegnere il sistema, digitare 'spegni' o 'poweroff'.\nBuon divertimento! A.F.\n"
+
+echo "VirtualKnot (VK) comandi: backup restore mountdisk umountdisk vkhelp"
+
+
