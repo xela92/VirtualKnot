@@ -789,8 +789,8 @@ case $ACTION in
         umountdisk $DEST;
         ;;
         clone)
-        local SOURCE=$1;
-        local DEST=$2;
+        local SOURCE=$2;
+        local DEST=$3;
         clone $SOURCE $DEST;
         ;;
         *)
