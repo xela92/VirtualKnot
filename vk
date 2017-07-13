@@ -562,7 +562,7 @@ function clone {
             ntfsclone -o - $SOURCE | pv --size $SOURCESIZE | ntfsclone - $DEST;
         else 
             echo "Disco non NTFS. Lo spazio vuoto potrebbe essere copiato."
-            clone_checks;
+            #clone_checks;
             dd if=$SOURCE of=$DEST bs=64K conv=noerror,sync,sparse status=progress
         fi
 }
